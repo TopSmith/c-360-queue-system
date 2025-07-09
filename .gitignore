@@ -51,11 +51,7 @@ dmypy.json
 *.log
 
 # Layer build artifacts
-layer-redis/python/redis/**/*.pyc
-layer-redis/python/redis/**/__pycache__/
-layer-redis/python/async_timeout/**/*.pyc
-layer-redis/python/async_timeout/**/__pycache__/
-
+layer-redis/*
 # OS files
 .DS_Store
 Thumbs.db
