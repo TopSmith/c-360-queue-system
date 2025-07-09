@@ -1,0 +1,33 @@
+service: producer-service
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: eu-west-2
+  environment:
+    REDIS_HOST: ${env:REDIS_HOST, '172.31.10.177'}
+    REDIS_PORT: ${env:REDIS_PORT, '6379'}
+    REDIS_PASSWORD: ${env:REDIS_PASSWORD, ''}
+
+layers:
+  redis:
+    path: ../layer-redis
+    compatibleRuntimes:
+      - python3.9
+
+functions:
+  producer:
+    handler: producer.lambda_handler
+    layers:
+      - { Ref: RedisLambdaLayer }
+    vpc:
+      securityGroupIds:
+        - sg-04171dde97a3944cc
+      subnetIds:
+        - subnet-2cba6e56
+        - subnet-56b8a31b
+        - subnet-fdf77c94
+    events:
+      - http:
+          path: produce
+          method: post 
