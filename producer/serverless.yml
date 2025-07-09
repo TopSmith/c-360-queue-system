@@ -7,7 +7,7 @@ provider:
   environment:
     REDIS_HOST: ${env:REDIS_HOST, '172.31.10.177'}
     REDIS_PORT: ${env:REDIS_PORT, '6379'}
-    REDIS_PASSWORD: ${env:REDIS_PASSWORD, ''}
+    REDIS_PASSWORD: ${env:REDIS_PASSWORD, 'EPo5fdyMcK5aWB4xeUb8wMCVv8wucL'}
 
 layers:
   redis:
@@ -27,7 +27,3 @@ functions:
         - subnet-2cba6e56
         - subnet-56b8a31b
         - subnet-fdf77c94
-    events:
-      - http:
-          path: produce
-          method: post 
