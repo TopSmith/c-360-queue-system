@@ -47,9 +47,6 @@ def lambda_handler(event, context):
         }
 
     sample_tasks = event.get('tasks') if event and 'tasks' in event else [
-        {'type': 'send_email', 'user_id': 123},
-        {'type': 'generate_report', 'user_id': 456},
-        {'type': 'cleanup', 'user_id': 789},
         {
             'type': 'start_transcribe',
             'data': {

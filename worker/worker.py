@@ -16,7 +16,7 @@ import uuid
 import requests
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
 
 # SQLAlchemy setup
 Base = declarative_base()
@@ -40,7 +40,7 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 # MySQL connection string
 DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, echo=True)  # Enable SQL logging
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)
 
@@ -59,10 +59,14 @@ async def callback(request: Request):
     session = SessionLocal()
     task = session.query(Task).filter(Task.task_id == task_id).first()
     if not task:
+        logging.warning(f"Callback: Task {task_id} not found in database")
         session.close()
         return JSONResponse(status_code=404, content={'error': 'Task not found'})
+    
+    logging.debug(f"Callback: Found task {task_id} in database: {task.__dict__}")
     task.state = status
     session.commit()
+    logging.debug(f"Callback: Task {task_id} updated to {status}")
     session.close()
     logging.info(f"Task {task_id} updated to {status} via callback.")
     return {'message': 'Task state updated'}
@@ -111,10 +115,13 @@ def handle_start_transcribe(data):
     queue_name = 'transcribe_queue'
 
     session = SessionLocal()
+    logging.debug(f"Database session created for task_id: {task_id}")
+    
     gpu_slot_counts = {}
     for gpu in gpu_endpoints.keys():
         count = session.query(Task).filter(Task.gpu_id == gpu, Task.state == 'processing').count()
         gpu_slot_counts[gpu] = count
+        logging.debug(f"GPU {gpu} has {count} active slots")
     # Find GPUs with available slots
     available_gpus = [gpu for gpu, count in gpu_slot_counts.items() if count < max_slots_per_gpu]
     if not available_gpus:
@@ -134,8 +141,14 @@ def handle_start_transcribe(data):
         return
     # Store task in DB as 'processing' with GPU and slot
     db_task = Task(task_id=task_id, queue=queue_name, state='processing', type=task_type, gpu_id=least_used_gpu, slot_index=slot_index)
+    logging.debug(f"Created task object: {db_task.__dict__}")
+    
     session.merge(db_task)
+    logging.debug(f"Task merged into session")
+    
     session.commit()
+    logging.debug(f"Task committed to database")
+    
     session.close()
     logging.info(f"Assigned transcribe task {task_id} to {least_used_gpu} slot {slot_index}")
     # Send HTTPS request to remote server with callback URL
@@ -156,10 +169,15 @@ def handle_start_transcribe(data):
         logging.error(f"Failed to send transcribe task {task_id} to {least_used_gpu} endpoint: {e}")
         # Optionally, update task state to 'failed' in DB
         session = SessionLocal()
+        logging.debug(f"Updating task {task_id} to failed state")
         db_task = session.query(Task).filter(Task.task_id == task_id).first()
         if db_task:
+            logging.debug(f"Found task in DB: {db_task.__dict__}")
             db_task.state = 'failed'
             session.commit()
+            logging.debug(f"Task {task_id} updated to failed state")
+        else:
+            logging.warning(f"Task {task_id} not found in database for failure update")
         session.close()
 
 def process_task(task):
