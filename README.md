@@ -1,15 +1,17 @@
 # Queue System with GPU Load Balancing
 
-A distributed queue system for processing transcription tasks with intelligent GPU load balancing and task management.
+A distributed queue system for processing transcription tasks with intelligent GPU load balancing and asynchronous task management.
 
 ## Features
 
 - **Multi-Queue Support**: Process tasks from multiple Redis queues
-- **GPU Load Balancing**: Automatically distributes transcription tasks across available GPUs
+- **GPU Load Balancing**: Automatically distributes transcription tasks across available GPUs (4 slots per GPU)
+- **Asynchronous Processing**: Non-blocking task execution with background HTTP requests
 - **Task State Management**: Track task progress with MySQL database
-- **Callback System**: Receive notifications when tasks complete
+- **Callback System**: Receive notifications when tasks complete via HTTP callbacks
 - **Graceful Shutdown**: Handles termination signals properly
 - **Multiple Task Types**: Supports email, reports, transcription, and cleanup tasks
+- **Lambda Integration**: Direct AWS Lambda event processing
 
 ## Architecture
 
@@ -17,14 +19,16 @@ The system consists of two main components:
 
 ### Producer (`producer/producer.py`)
 - Pushes tasks to Redis queues
-- Supports AWS Lambda deployment
+- Supports AWS Lambda deployment with flexible event structures
+- Handles single tasks or batch processing
 - Configurable queue names and task types
 
 ### Worker (`worker/worker.py`)
-- Processes tasks from Redis queues
-- Manages GPU slot allocation (4 slots per GPU)
+- Processes tasks from Redis queues asynchronously
+- Manages GPU slot allocation (4 slots per GPU) with load balancing
+- Sends HTTP requests to GPU endpoints in background threads
 - Handles callbacks and database updates
-- Runs FastAPI server for status callbacks
+- Runs FastAPI server for status callbacks on port 8000
 
 ## Prerequisites
 
@@ -60,10 +64,10 @@ CREATE DATABASE queue_system;
 -- Create tasks table
 CREATE TABLE tasks (
     task_id VARCHAR(255) PRIMARY KEY,
-    queue VARCHAR(255),
-    state ENUM('pending', 'processing', 'finished', 'failed'),
-    type VARCHAR(255),
-    gpu_id VARCHAR(255),
+    queue VARCHAR(100),
+    state VARCHAR(20),
+    type VARCHAR(50),
+    gpu_id VARCHAR(10),
     slot_index INT
 );
 
@@ -124,7 +128,35 @@ cd producer
 python producer.py
 ```
 
-Or deploy as AWS Lambda function.
+Or deploy as AWS Lambda function with event structure:
+
+**Single Task Event:**
+```json
+{
+  "type": "start_transcribe",
+  "data": {
+    "s3_bucket": "esales-et-callrecordings",
+    "s3_key": "recordings/audio.wav",
+    "call_session": "1751353080.711222"
+  }
+}
+```
+
+**Multiple Tasks Event:**
+```json
+{
+  "tasks": [
+    {
+      "type": "start_transcribe",
+      "data": {...}
+    },
+    {
+      "type": "send_email",
+      "data": {...}
+    }
+  ]
+}
+```
 
 ### Task Types
 
@@ -176,13 +208,16 @@ Or deploy as AWS Lambda function.
 }
 ```
 
-## GPU Load Balancing
+## GPU Load Balancing & Asynchronous Processing
 
 The system automatically:
 - Monitors GPU usage across 4 configured endpoints (g0-g3)
-- Assigns tasks to the least-used GPU
+- Assigns tasks to the least-used GPU with available slots
 - Manages 4 slots per GPU for concurrent processing
-- Tracks task states in MySQL database
+- Immediately marks tasks as 'processing' in MySQL database
+- Sends HTTP requests to GPU endpoints in background threads (non-blocking)
+- Continues processing other tasks without waiting for GPU responses
+- Updates task status to 'finished' or 'failed' via HTTP callbacks
 
 ### GPU Endpoints
 
@@ -209,9 +244,9 @@ Receives task completion notifications:
 
 ### Task States
 - `pending`: Task created but not yet processing
-- `processing`: Task assigned to GPU and in progress
-- `finished`: Task completed successfully
-- `failed`: Task failed or encountered error
+- `processing`: Task assigned to GPU and HTTP request sent (asynchronous)
+- `finished`: Task completed successfully (updated via callback)
+- `failed`: Task failed or encountered error (updated via callback or request failure)
 
 ### Database Queries
 
@@ -235,7 +270,8 @@ The producer can be deployed as an AWS Lambda function:
 
 1. Package the `producer/` directory
 2. Set environment variables in Lambda console
-3. Configure triggers (API Gateway, SQS, etc.)
+3. Configure triggers (API Gateway, SQS, EventBridge, etc.)
+4. Use the event structure described in the Usage section
 
 ### Docker (Worker)
 Create a Dockerfile for the worker:
@@ -250,8 +286,16 @@ RUN pip install -r requirements.txt
 COPY worker/ ./worker/
 WORKDIR /app/worker
 
+# Set environment variables
+ENV PYTHONUNBUFFERED=1  # Forces Python output to be sent straight to terminal (no buffering)
+ENV REDIS_HOST=redis
+ENV DB_HOST=mysql
+
 CMD ["python", "worker.py"]
 ```
+
+**Environment Variable Explanation:**
+- `PYTHONUNBUFFERED=1`: Forces Python's stdout and stderr to be completely unbuffered. This ensures that log messages and print statements appear immediately in Docker logs instead of being buffered. Essential for real-time monitoring and debugging in containerized environments.
 
 ## Contributing
 

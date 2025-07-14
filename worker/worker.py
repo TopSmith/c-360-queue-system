@@ -14,6 +14,8 @@ from sqlalchemy.orm import sessionmaker
 import threading
 import uuid
 import requests
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s')
@@ -166,7 +168,8 @@ def handle_start_transcribe(data):
     
     session.close()
     logging.info(f"Assigned transcribe task {task_id} to {least_used_gpu} slot {slot_index}")
-    # Send HTTPS request to remote server with callback URL
+    
+    # Send HTTPS request to remote server asynchronously
     payload = {
         's3_bucket': data.get('s3_bucket'),
         's3_key': data.get('s3_key'),
@@ -176,24 +179,34 @@ def handle_start_transcribe(data):
         'call_session': data.get('call_session')
     }
     logging.info(f"For manual callback testing, use: curl -X POST {callback_url} -H 'Content-Type: application/json' -d '{{\"task_id\": \"{task_id}\", \"status\": \"finished\"}}'")
-    try:
-        response = requests.post(gpu_endpoints[least_used_gpu], json=payload, timeout=10, headers=headers)
-        response.raise_for_status()
-        logging.info(f"Sent transcribe task {task_id} to {least_used_gpu} endpoint. Status: {response.status_code}")
-    except Exception as e:
-        logging.error(f"Failed to send transcribe task {task_id} to {least_used_gpu} endpoint: {e}")
-        # Optionally, update task state to 'failed' in DB
-        session = SessionLocal()
-        logging.debug(f"Updating task {task_id} to failed state")
-        db_task = session.query(Task).filter(Task.task_id == task_id).first()
-        if db_task:
-            logging.debug(f"Found task in DB: {db_task.__dict__}")
-            db_task.state = 'failed'
-            session.commit()
-            logging.debug(f"Task {task_id} updated to failed state")
-        else:
-            logging.warning(f"Task {task_id} not found in database for failure update")
-        session.close()
+    
+    # Send request in background thread without waiting for response
+    def send_transcribe_request():
+        try:
+            response = requests.post(gpu_endpoints[least_used_gpu], json=payload, timeout=30, headers=headers)
+            response.raise_for_status()
+            logging.info(f"Successfully sent transcribe task {task_id} to {least_used_gpu} endpoint. Status: {response.status_code}")
+        except Exception as e:
+            logging.error(f"Failed to send transcribe task {task_id} to {least_used_gpu} endpoint: {e}")
+            # Update task state to 'failed' in DB if request fails
+            session = SessionLocal()
+            logging.debug(f"Updating task {task_id} to failed state due to request failure")
+            db_task = session.query(Task).filter(Task.task_id == task_id).first()
+            if db_task:
+                logging.debug(f"Found task in DB: {db_task.__dict__}")
+                db_task.state = 'failed'
+                session.commit()
+                logging.debug(f"Task {task_id} updated to failed state")
+            else:
+                logging.warning(f"Task {task_id} not found in database for failure update")
+            session.close()
+    
+    # Start the request in a background thread
+    thread = threading.Thread(target=send_transcribe_request)
+    thread.daemon = True
+    thread.start()
+    
+    logging.info(f"Transcribe task {task_id} marked as processing and request sent to {least_used_gpu} in background")
 
 def process_task(task):
     logging.info(f"Processing task: {task}")
