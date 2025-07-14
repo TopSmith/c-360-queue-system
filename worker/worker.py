@@ -8,7 +8,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
-from sqlalchemy import create_engine, Column, String, Integer, Enum
+from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import threading
@@ -25,7 +25,7 @@ class Task(Base):
     __tablename__ = 'tasks'
     task_id = Column(String, primary_key=True)
     queue = Column(String)
-    state = Column(Enum('pending', 'processing', 'finished', 'failed', name='task_state'))
+    state = Column(String(20))
     type = Column(String)
     gpu_id = Column(String)  # e.g., 'g0', 'g1', etc.
     slot_index = Column(Integer)  # 0-3
