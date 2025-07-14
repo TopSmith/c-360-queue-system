@@ -23,11 +23,11 @@ Base = declarative_base()
 
 class Task(Base):
     __tablename__ = 'tasks'
-    task_id = Column(String, primary_key=True)
-    queue = Column(String)
+    task_id = Column(String(255), primary_key=True)
+    queue = Column(String(100))
     state = Column(String(20))
-    type = Column(String)
-    gpu_id = Column(String)  # e.g., 'g0', 'g1', etc.
+    type = Column(String(50))
+    gpu_id = Column(String(10))  # e.g., 'g0', 'g1', etc.
     slot_index = Column(Integer)  # 0-3
 
 # Database configuration from environment variables
