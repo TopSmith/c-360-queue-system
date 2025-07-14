@@ -33,7 +33,7 @@ class Task(Base):
 # Database configuration from environment variables
 DB_HOST = os.environ.get('DB_HOST', 'localhost')
 DB_PORT = os.environ.get('DB_PORT', '3306')
-DB_NAME = os.environ.get('DB_NAME', 'queue_system')
+DB_NAME = os.environ.get('DB_NAME', 'esh_funbags')
 DB_USER = os.environ.get('DB_USER', 'root')
 DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 
