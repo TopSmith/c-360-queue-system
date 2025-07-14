@@ -11,13 +11,19 @@ provider:
 
 layers:
   redis:
-    path: ../layer-redis
+    path: ../layer-redis 
     compatibleRuntimes:
       - python3.9
 
 functions:
   producer:
     handler: producer.lambda_handler
+    package:
+      exclude:
+        - serverless.yml
+      include:
+        - producer.py
+        - layer-redis/python/lib/python3.9/site-packages/**
     layers:
       - { Ref: RedisLambdaLayer }
     vpc:
@@ -27,3 +33,4 @@ functions:
         - subnet-2cba6e56
         - subnet-56b8a31b
         - subnet-fdf77c94
+    

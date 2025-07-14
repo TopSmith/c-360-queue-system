@@ -30,7 +30,17 @@ class Task(Base):
     gpu_id = Column(String)  # e.g., 'g0', 'g1', etc.
     slot_index = Column(Integer)  # 0-3
 
-engine = create_engine('sqlite:///tasks.db')
+# Database configuration from environment variables
+DB_HOST = os.environ.get('DB_HOST', 'localhost')
+DB_PORT = os.environ.get('DB_PORT', '3306')
+DB_NAME = os.environ.get('DB_NAME', 'queue_system')
+DB_USER = os.environ.get('DB_USER', 'root')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
+
+# MySQL connection string
+DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+engine = create_engine(DATABASE_URL)
 Base.metadata.create_all(engine)
 SessionLocal = sessionmaker(bind=engine)
 
@@ -67,15 +77,105 @@ def handle_sigterm(signum, frame):
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
 
+def handle_send_email(data):
+    logging.info(f"Handling send_email with data: {data}")
+    # TODO: Implement actual email sending logic
+    time.sleep(2)
+    logging.info("Email sent.")
+
+def handle_generate_report(data):
+    logging.info(f"Handling generate_report with data: {data}")
+    # TODO: Implement actual report generation logic
+    time.sleep(3)
+    logging.info("Report generated.")
+
+def handle_start_transcribe(data):
+    logging.info(f"Handling start_transcribe with data: {data}")
+    
+    # Configure internal parameters
+    gpu_endpoints = {
+        'g0': 'https://ai.uk.customer360.co/g0/ai/get_detailed_transcript_from_s3?sort_by=start',
+        'g1': 'https://ai.uk.customer360.co/g1/ai/get_detailed_transcript_from_s3?sort_by=start',
+        'g2': 'https://ai.uk.customer360.co/g2/ai/get_detailed_transcript_from_s3?sort_by=start',
+        'g3': 'https://ai.uk.customer360.co/g3/ai/get_detailed_transcript_from_s3?sort_by=start',
+    }
+    callback_url = os.environ.get('CALLBACK_URL', 'http://localhost:8000/callback')
+    max_slots_per_gpu = 4
+    bearer_token = os.environ.get('BEARER_TOKEN')
+    headers = {'Authorization': f'Bearer {bearer_token}'} if bearer_token else {}
+    
+    # Assign a unique task_id if not present
+    task_id = data.get('task_id') or str(uuid.uuid4())
+    data['task_id'] = task_id
+    task_type = 'start_transcribe'
+    queue_name = 'transcribe_queue'
+
+    session = SessionLocal()
+    gpu_slot_counts = {}
+    for gpu in gpu_endpoints.keys():
+        count = session.query(Task).filter(Task.gpu_id == gpu, Task.state == 'processing').count()
+        gpu_slot_counts[gpu] = count
+    # Find GPUs with available slots
+    available_gpus = [gpu for gpu, count in gpu_slot_counts.items() if count < max_slots_per_gpu]
+    if not available_gpus:
+        logging.info('All GPUs are full. Waiting for a slot to free up...')
+        session.close()
+        time.sleep(2)
+        return
+    # Least-used GPU
+    least_used_gpu = min(available_gpus, key=lambda g: gpu_slot_counts[g])
+    # Find first available slot index for this GPU
+    used_slots = [t.slot_index for t in session.query(Task).filter(Task.gpu_id == least_used_gpu, Task.state == 'processing').all() if t.slot_index is not None]
+    slot_index = next((i for i in range(max_slots_per_gpu) if i not in used_slots), None)
+    if slot_index is None:
+        logging.info(f'No free slot on {least_used_gpu}, this should not happen. Skipping task.')
+        session.close()
+        time.sleep(2)
+        return
+    # Store task in DB as 'processing' with GPU and slot
+    db_task = Task(task_id=task_id, queue=queue_name, state='processing', type=task_type, gpu_id=least_used_gpu, slot_index=slot_index)
+    session.merge(db_task)
+    session.commit()
+    session.close()
+    logging.info(f"Assigned transcribe task {task_id} to {least_used_gpu} slot {slot_index}")
+    # Send HTTPS request to remote server with callback URL
+    payload = {
+        's3_bucket': data.get('s3_bucket'),
+        's3_key': data.get('s3_key'),
+        's3_save_bucket': data.get('s3_save_bucket'),
+        's3_save_key': data.get('s3_save_key'),
+        'pii_entities': data.get('pii_entities'),
+        'call_session': data.get('call_session')
+    }
+    logging.info(f"For manual callback testing, use: curl -X POST {callback_url} -H 'Content-Type: application/json' -d '{{\"task_id\": \"{task_id}\", \"status\": \"finished\"}}'")
+    try:
+        response = requests.post(gpu_endpoints[least_used_gpu], json=payload, timeout=10, headers=headers)
+        response.raise_for_status()
+        logging.info(f"Sent transcribe task {task_id} to {least_used_gpu} endpoint. Status: {response.status_code}")
+    except Exception as e:
+        logging.error(f"Failed to send transcribe task {task_id} to {least_used_gpu} endpoint: {e}")
+        # Optionally, update task state to 'failed' in DB
+        session = SessionLocal()
+        db_task = session.query(Task).filter(Task.task_id == task_id).first()
+        if db_task:
+            db_task.state = 'failed'
+            session.commit()
+        session.close()
+
 def process_task(task):
     logging.info(f"Processing task: {task}")
-    if task.get('type') == 'send_email':
-        time.sleep(2)
-    elif task.get('type') == 'generate_report':
-        time.sleep(3)
-    elif task.get('type') == 'cleanup':
+    task_type = task.get('type')
+    data = task.get('data', {})
+    if task_type == 'send_email':
+        handle_send_email(data)
+    elif task_type == 'generate_report':
+        handle_generate_report(data)
+    elif task_type == 'start_transcribe':
+        handle_start_transcribe(data)
+    elif task_type == 'cleanup':
         time.sleep(1)
     else:
+        logging.warning(f"Unknown task type: {task_type}. Skipping.")
         time.sleep(1)
     logging.info(f"Finished task: {task}")
 
@@ -87,15 +187,6 @@ def main():
 
     # Multiple queues support
     queues = os.environ.get('TASK_QUEUES', 'task_queue_1,task_queue_2').split(',')
-    callback_url = os.environ.get('CALLBACK_URL', 'http://localhost:8000/callback')
-    # GPU endpoints
-    gpu_endpoints = {
-        'g0': 'https://ai.uk.customer360.co/g0/ai/get_detailed_transcript_from_s3?sort_by=start',
-        'g1': 'https://ai.uk.customer360.co/g1/ai/get_detailed_transcript_from_s3?sort_by=start',
-        'g2': 'https://ai.uk.customer360.co/g2/ai/get_detailed_transcript_from_s3?sort_by=start',
-        'g3': 'https://ai.uk.customer360.co/g3/ai/get_detailed_transcript_from_s3?sort_by=start',
-    }
-    max_slots_per_gpu = 4
 
     logging.info(f'Worker started. Waiting for tasks on queues: {queues}')
     global done
@@ -111,55 +202,7 @@ def main():
                 task['task_id'] = task_id
                 task_type = task.get('type', 'unknown')
 
-                # Find least-used GPU and available slot
-                session = SessionLocal()
-                gpu_slot_counts = {}
-                for gpu in gpu_endpoints.keys():
-                    count = session.query(Task).filter(Task.gpu_id == gpu, Task.state == 'processing').count()
-                    gpu_slot_counts[gpu] = count
-                # Find GPUs with available slots
-                available_gpus = [gpu for gpu, count in gpu_slot_counts.items() if count < max_slots_per_gpu]
-                if not available_gpus:
-                    logging.info('All GPUs are full. Waiting for a slot to free up...')
-                    session.close()
-                    time.sleep(2)
-                    continue
-                # Least-used GPU
-                least_used_gpu = min(available_gpus, key=lambda g: gpu_slot_counts[g])
-                # Find first available slot index for this GPU
-                used_slots = [t.slot_index for t in session.query(Task).filter(Task.gpu_id == least_used_gpu, Task.state == 'processing').all() if t.slot_index is not None]
-                slot_index = next((i for i in range(max_slots_per_gpu) if i not in used_slots), None)
-                if slot_index is None:
-                    logging.info(f'No free slot on {least_used_gpu}, this should not happen. Skipping task.')
-                    session.close()
-                    time.sleep(2)
-                    continue
-                # Store task in DB as 'processing' with GPU and slot
-                db_task = Task(task_id=task_id, queue=queue_name.decode('utf-8'), state='processing', type=task_type, gpu_id=least_used_gpu, slot_index=slot_index)
-                session.merge(db_task)
-                session.commit()
-                session.close()
-                logging.info(f"Dequeued task {task_id} from {queue_name.decode('utf-8')}: {task}, assigned to {least_used_gpu} slot {slot_index}")
-                # Send HTTPS request to remote server with callback URL
-                payload = {
-                    'task_id': task_id,
-                    'task': task,
-                    'callback_url': callback_url
-                }
-                logging.info(f"For manual callback testing, use: curl -X POST {callback_url} -H 'Content-Type: application/json' -d '{{\"task_id\": \"{task_id}\", \"status\": \"finished\"}}'")
-                try:
-                    response = requests.post(gpu_endpoints[least_used_gpu], json=payload, timeout=10)
-                    response.raise_for_status()
-                    logging.info(f"Sent task {task_id} to {least_used_gpu} endpoint. Status: {response.status_code}")
-                except Exception as e:
-                    logging.error(f"Failed to send task {task_id} to {least_used_gpu} endpoint: {e}")
-                    # Optionally, update task state to 'failed' in DB
-                    session = SessionLocal()
-                    db_task = session.query(Task).filter(Task.task_id == task_id).first()
-                    if db_task:
-                        db_task.state = 'failed'
-                        session.commit()
-                    session.close()
+                process_task(task)
         except Exception as e:
             logging.error(f"Error processing task: {e}")
             time.sleep(1)

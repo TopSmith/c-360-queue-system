@@ -50,6 +50,17 @@ def lambda_handler(event, context):
         {'type': 'send_email', 'user_id': 123},
         {'type': 'generate_report', 'user_id': 456},
         {'type': 'cleanup', 'user_id': 789},
+        {
+            'type': 'start_transcribe',
+            'data': {
+                's3_bucket': 'esales-et-callrecordings',
+                's3_key': 'recordings/2025/07/01/stereo_in-02034320234-07927553718-20250701-065800-1751353080.711222.wav',
+                's3_save_bucket': 'esales-et-transcribes',
+                's3_save_key': 'internalTranscribed/redacted-internaltanscribedstereo_in-02034320234-07927553718-20250701-065800-1751353080.711222.wav.json',
+                'pii_entities': 'email,postcode,ni_number,sort_code,person,location,first_name,last_name,phone_number,address,company_name,country_name,city_name,state_name,password,national_id,sort_code,date_of_birth',
+                'call_session': '1751353080.711222'
+            }
+        },
     ]
     logger.debug(f'Tasks to queue: {sample_tasks}')
 
