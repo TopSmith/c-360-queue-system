@@ -40,8 +40,23 @@ DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 # MySQL connection string
 DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL, echo=True)  # Enable SQL logging
-Base.metadata.create_all(engine)
+logging.debug(f"Database connection URL: {DATABASE_URL}")
+logging.debug(f"Database config - Host: {DB_HOST}, Port: {DB_PORT}, Database: {DB_NAME}, User: {DB_USER}")
+
+try:
+    engine = create_engine(DATABASE_URL, echo=True)  # Enable SQL logging
+    logging.debug("Database engine created successfully")
+    
+    # Test database connection
+    with engine.connect() as connection:
+        logging.debug("Database connection test successful")
+    
+    Base.metadata.create_all(engine)
+    logging.debug("Database tables created/verified successfully")
+    
+except Exception as e:
+    logging.error(f"Database connection failed: {e}")
+    raise
 SessionLocal = sessionmaker(bind=engine)
 
 db_session = SessionLocal()
