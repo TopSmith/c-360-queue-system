@@ -8,7 +8,8 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
-from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy import create_engine, Column, String, Integer, DateTime
+from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import threading
@@ -31,6 +32,8 @@ class Task(Base):
     type = Column(String(50))
     gpu_id = Column(String(10))  # e.g., 'g0', 'g1', etc.
     slot_index = Column(Integer)  # 0-3
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 # Database configuration from environment variables
 DB_HOST = os.environ.get('DB_HOST', 'localhost')
@@ -183,23 +186,45 @@ def handle_start_transcribe(data):
     # Send request in background thread without waiting for response
     def send_transcribe_request():
         try:
+            logging.info(f"Sending HTTP request for task {task_id} to {least_used_gpu} endpoint: {gpu_endpoints[least_used_gpu]}")
+            logging.debug(f"Request payload: {payload}")
+            logging.debug(f"Request headers: {headers}")
+            
             response = requests.post(gpu_endpoints[least_used_gpu], json=payload, timeout=30, headers=headers)
             response.raise_for_status()
             logging.info(f"Successfully sent transcribe task {task_id} to {least_used_gpu} endpoint. Status: {response.status_code}")
+            
+        except requests.exceptions.Timeout as e:
+            logging.error(f"TIMEOUT: Task {task_id} to {least_used_gpu} endpoint timed out after 30 seconds: {e}")
+            update_task_to_failed(task_id, f"Request timeout: {e}")
+            
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"CONNECTION ERROR: Task {task_id} to {least_used_gpu} endpoint connection failed: {e}")
+            update_task_to_failed(task_id, f"Connection error: {e}")
+            
+        except requests.exceptions.HTTPError as e:
+            logging.error(f"HTTP ERROR: Task {task_id} to {least_used_gpu} endpoint returned HTTP error: {e}")
+            logging.error(f"Response status: {e.response.status_code if e.response else 'Unknown'}")
+            logging.error(f"Response body: {e.response.text if e.response else 'No response'}")
+            update_task_to_failed(task_id, f"HTTP error: {e}")
+            
         except Exception as e:
-            logging.error(f"Failed to send transcribe task {task_id} to {least_used_gpu} endpoint: {e}")
-            # Update task state to 'failed' in DB if request fails
-            session = SessionLocal()
-            logging.debug(f"Updating task {task_id} to failed state due to request failure")
-            db_task = session.query(Task).filter(Task.task_id == task_id).first()
-            if db_task:
-                logging.debug(f"Found task in DB: {db_task.__dict__}")
-                db_task.state = 'failed'
-                session.commit()
-                logging.debug(f"Task {task_id} updated to failed state")
-            else:
-                logging.warning(f"Task {task_id} not found in database for failure update")
-            session.close()
+            logging.error(f"UNEXPECTED ERROR: Task {task_id} to {least_used_gpu} endpoint failed with unexpected error: {e}")
+            update_task_to_failed(task_id, f"Unexpected error: {e}")
+    
+    def update_task_to_failed(task_id, error_reason):
+        """Helper function to update task state to failed with error reason"""
+        session = SessionLocal()
+        logging.debug(f"Updating task {task_id} to failed state due to: {error_reason}")
+        db_task = session.query(Task).filter(Task.task_id == task_id).first()
+        if db_task:
+            logging.debug(f"Found task in DB: {db_task.__dict__}")
+            db_task.state = 'failed'
+            session.commit()
+            logging.info(f"Task {task_id} marked as FAILED due to: {error_reason}")
+        else:
+            logging.warning(f"Task {task_id} not found in database for failure update")
+        session.close()
     
     # Start the request in a background thread
     thread = threading.Thread(target=send_transcribe_request)
